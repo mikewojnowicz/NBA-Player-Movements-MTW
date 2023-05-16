@@ -75,10 +75,12 @@ verbose=True
 event_retained_dict={} # maps event idx to (event_quarter,start time,end time)
 game_clock_at_end_of_previous_play = 721.0 # each quarter has 12 min (720 secs)
 current_quarter = 1 
+retained_event_idx_just_after_halftime=None
 
 for (i,event_dict) in enumerate(event_dicts):
 
     event=Event(event_dict)
+    first_retained_event_after_halftime=False 
     if event.moments:  # event.moments could be empty; we exclude those
 
         ### check if we're in the right quarter to analyze with respect to game clock
@@ -87,7 +89,8 @@ for (i,event_dict) in enumerate(event_dicts):
             # then break out of event dict for loop, go to next quarter.
             current_quarter+=1
             game_clock_at_end_of_previous_play = 721.0 # each quarter has 12 min (720 secs)
-
+            if event_quarter==3:
+                first_retained_event_after_halftime=True 
         ### determine if event contains starters
         current_players= event.moments[0].players
         current_player_ids=[player.id for player in current_players]
@@ -103,25 +106,31 @@ for (i,event_dict) in enumerate(event_dicts):
             event_retained_dict[i]=(event_quarter, event_start_time, event_end_time)
             game_clock_at_end_of_previous_play = event_end_time
 
+            if first_retained_event_after_halftime:
+                retained_event_idx_just_after_halftime=len(event_retained_dict)
+                print(f"When quarter changed to {current_quarter}, we were on the {retained_event_idx_just_after_halftime}th retained event")
+                first_retained_event_after_halftime=False    
+                
         if verbose:
             print(f"start: {event_start_time:.02f}. end: {event_end_time:.02f}. "
                     f"game clock at end of prev play: {game_clock_at_end_of_previous_play:.02f}. "
                     f"event quarter: {event_quarter}. current quarter {current_quarter} "
                     f"starters: {event_contains_starters}. overlap: {event_doesnt_overlap_previous}" )
-                    
+            
+   
 
 ### compute some stats:
 num_events = len(event_retained_dict)
 starters_duration_secs=np.sum([value[1]-value[2] for value in event_retained_dict.values()])
 
 print(f"When starters were in, there were {num_events} plays totaling {starters_duration_secs/60.0:.02f} mins")
-
-
+print(f"The event idx just after halftime is {retained_event_idx_just_after_halftime}.")
 
 
 ### Construct dataset
 J = len(starter_ids_for_focal_team)
-D =2 # x coord and y coord of location
+D = 2 # observation dimention: x coord and y coord of player on court 
+M = 3 # covariate dimension: ball x, ball y, and ball radius (used to determine who has ball)
 event_ids_to_retain =list(event_retained_dict.keys())
 
 T_grand=np.sum([n_moments_per_event[i] for i in event_ids_to_retain])
@@ -131,10 +140,14 @@ T_grand=np.sum([n_moments_per_event[i] for i in event_ids_to_retain])
 E=len(event_ids_to_retain)
 end_times=np.full((E+1,),-1)
 
+timestep_just_after_halftime= None
 t_global_curr=0
 xs = np.full((T_grand,J,D), np.nan)
+covariates_raw = np.full((T_grand,M), np.nan)
 for (e, event_id) in enumerate(event_ids_to_retain): 
     event=Event(event_dicts[event_id])
+    if e>=retained_event_idx_just_after_halftime and timestep_just_after_halftime is None:
+        timestep_just_after_halftime=t_global_curr
     for (t, moment) in enumerate(event.moments):
         for player in moment.players:
             identity = player.id
@@ -143,12 +156,18 @@ for (e, event_id) in enumerate(event_ids_to_retain):
                 x,y=player.x, player.y
                 xs[t_global_curr,j,0]=x 
                 xs[t_global_curr,j,1]=y
+                covariates_raw[t_global_curr,0] = moment.ball.x
+                covariates_raw[t_global_curr,1] = moment.ball.y
+                covariates_raw[t_global_curr,2] = moment.ball.radius
         t_global_curr+=1
     end_times[e+1]=t_global_curr
 
 assert T_grand==end_times[-1]
 
-np.save(save_dir+f"basketball_game_{focal_team}_vs_{opponent_team}_stacked_starter_plays.npy", xs)
-np.save(save_dir+f"basketball_game_{focal_team}_vs_{opponent_team}_end_times.npy", end_times)
+
+
+np.save(save_dir+f"basketball_game_{focal_team}_vs_{opponent_team}_post_halftime_timestep_{timestep_just_after_halftime}_covariates_raw.npy", covariates_raw)
+np.save(save_dir+f"basketball_game_{focal_team}_vs_{opponent_team}_post_halftime_timestep_{timestep_just_after_halftime}_stacked_starter_plays.npy", xs)
+np.save(save_dir+f"basketball_game_{focal_team}_vs_{opponent_team}_post_halftime_timestep_{timestep_just_after_halftime}_end_times.npy", end_times)
 
 
